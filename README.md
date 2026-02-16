@@ -1,184 +1,145 @@
+# SourceClear CI Script for Windows
+
+A lightweight Windows batch script that automatically downloads, caches, and runs the SourceClear (srcclr) agent from Veracode for static code analysis.
+
+## Overview
+
+This script simplifies the integration of SourceClear into Windows-based CI/CD pipelines by handling:
+- Automatic version detection and downloads
+- Local caching to avoid repeated downloads
+- Multiple extraction methods for compatibility
+- Debug mode for troubleshooting
+
+## Usage
+
+### Basic Usage
+
+```cmd
+ci.cmd scan
+```
+
+### With Arguments
+
+Pass any srcclr arguments directly to the script:
+
+```cmd
+ci.cmd scan --url https://github.com/example/repo
+```
+
+### Debug Mode
+
+Enable debug output using either method:
+
+```cmd
+set DEBUG=1
+ci.cmd scan
+```
+
+Or:
+
+```cmd
+ci.cmd scan --debug
+```
+
+## Features
+
+### Version Management
+- Automatically downloads the latest version from Veracode
+- Supports custom version via `SRCCLR_VERSION` environment variable
+- Caches downloaded versions to avoid redundant downloads
+
+### Intelligent Caching
+- Downloads are cached in `%TEMP%\srcclr\`
+- Detects existing installations to skip re-downloads
+- Uses unique cache directories to support concurrent executions
+
+### Multiple Extraction Methods
+The script attempts extraction using multiple methods for maximum compatibility:
+1. **tar** - Built into Windows 10+
+2. **PowerShell Expand-Archive** - Available on all PowerShell systems
+3. **7-Zip** - Downloaded automatically as fallback
+
+### Download Methods
+Multiple download methods are tried in order:
+1. **curl** - Available in Windows 10+
+2. **PowerShell Invoke-WebRequest** - Fallback method
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SRCCLR_VERSION` | Specific version to download | Latest version from Veracode |
+| `DEBUG` | Enable debug output | Not set (disabled) |
+
+## Requirements
+
+- **Windows OS**: Windows 10 or later recommended
+- **PowerShell**: Required for fallback download/extraction methods
+- **Network Access**: Must be able to reach `https://sca-downloads.veracode.com`
+
+## Examples
+
+### Specify a Version
+
+```cmd
+set SRCCLR_VERSION=3.8.50
+ci.cmd scan
+```
+
+### Run with Multiple Arguments
+
+```cmd
+ci.cmd scan --json output.json --loud
+```
+
+### CI/CD Integration
+
+```cmd
 @echo off
-REM SourceClear CI Script for Windows (DOS Batch)
-REM
-REM Note: This is a simplified version of the PowerShell script.
-REM Some features like concurrent execution support are simplified.
-
-setlocal enabledelayedexpansion
-
-REM Exit if no arguments provided (matching PowerShell behavior)
-if "%~1"=="" exit /b 0
-
-REM Check for debug flag
-set DEBUG_MODE=0
-if not "%DEBUG%"=="" set DEBUG_MODE=1
-for %%a in (%*) do (
-    if /I "%%a"=="--debug" set DEBUG_MODE=1
-)
-
-set DOWNLOAD_URL=https://sca-downloads.veracode.com
-set CACHE_DIR_PARENT=%TEMP%\srcclr
-
-REM Get version
-call :GetVersion
-if errorlevel 1 goto :error
-
-REM Get cache directory
-call :GetCacheDir
-if errorlevel 1 goto :error
-
-REM Download and extract srcclr
-call :DownloadSrcclr
-if errorlevel 1 goto :error
-
-call :UnzipSrcclr
-if errorlevel 1 goto :error
-
-REM Run srcclr with all arguments
-set SRCCLR_PATH=%CACHE_DIR%\srcclr-%SRCCLR_VERSION%\bin\srcclr.cmd
-if %DEBUG_MODE%==1 echo [DEBUG] Invoking %SRCCLR_PATH% with arguments: %*
-if exist "%SRCCLR_PATH%" (
-    call "%SRCCLR_PATH%" %*
-) else (
-    echo Error: srcclr not found at %SRCCLR_PATH%
+REM In your CI pipeline script
+call ci.cmd scan --url %REPO_URL%
+if errorlevel 1 (
+    echo SourceClear scan failed
     exit /b 1
 )
+```
 
-exit /b %errorlevel%
+## Cache Location
 
-:GetVersion
-REM Get version from environment or download LATEST_VERSION
-if defined SRCCLR_VERSION (
-    if %DEBUG_MODE%==1 echo [DEBUG] Using SRCCLR_VERSION from environment: %SRCCLR_VERSION%
-    goto :eof
-)
+Downloaded files are stored in: `%TEMP%\srcclr\`
 
-if %DEBUG_MODE%==1 echo [DEBUG] Downloading version from %DOWNLOAD_URL%/LATEST_VERSION
-set VERSION_FILE=%TEMP%\srcclr_version_%RANDOM%.txt
+To clear the cache:
+```cmd
+rmdir /s /q "%TEMP%\srcclr"
+```
 
-REM Try using curl first (available in Windows 10+)
-curl -s -o "%VERSION_FILE%" "%DOWNLOAD_URL%/LATEST_VERSION" 2>nul
-if errorlevel 1 (
-    REM Fallback to PowerShell if curl fails
-    powershell -Command "(New-Object System.Net.WebClient).DownloadString('%DOWNLOAD_URL%/LATEST_VERSION')" > "%VERSION_FILE%"
-)
+## Troubleshooting
 
-if not exist "%VERSION_FILE%" (
-    echo Error: Could not download version file
-    exit /b 1
-)
+### Enable Debug Mode
+```cmd
+ci.cmd scan --debug
+```
 
-REM Read version and trim whitespace
-set /p SRCCLR_VERSION=<"%VERSION_FILE%"
-set SRCCLR_VERSION=%SRCCLR_VERSION: =%
-del "%VERSION_FILE%" 2>nul
+### Common Issues
 
-if %DEBUG_MODE%==1 echo [DEBUG] Version: %SRCCLR_VERSION%
-goto :eof
+**Error: Could not download version file**
+- Check network connectivity to `https://sca-downloads.veracode.com`
+- Verify proxy settings if behind a corporate firewall
 
-:GetCacheDir
-REM Create cache directory parent if it doesn't exist
-if not exist "%CACHE_DIR_PARENT%" mkdir "%CACHE_DIR_PARENT%"
+**Error: srcclr not found at [path]**
+- Extraction may have failed; try clearing cache and re-running
+- Enable debug mode to see detailed extraction logs
 
-REM Look for existing completed installation
-set FOUND_EXISTING=0
-for /d %%d in ("%CACHE_DIR_PARENT%\*") do (
-    if exist "%%d\srcclr-%SRCCLR_VERSION%\completed" (
-        set CACHE_DIR=%%d
-        set FOUND_EXISTING=1
-        if %DEBUG_MODE%==1 echo [DEBUG] Found existing installation at %%d
-        goto :CacheDirSet
-    )
-)
+**Script exits immediately**
+- The script exits with code 0 if no arguments are provided
+- Always provide at least one argument (e.g., `scan`)
 
-:CacheDirSet
-if %FOUND_EXISTING%==0 (
-    REM Use process ID or random number for new installation
-    set CACHE_DIR=%CACHE_DIR_PARENT%\%RANDOM%%RANDOM%
-    
-    REM Remove existing directory if it exists
-    if exist "!CACHE_DIR!" rmdir /s /q "!CACHE_DIR!"
-    
-    mkdir "!CACHE_DIR!"
-    if %DEBUG_MODE%==1 echo [DEBUG] Created new cache directory: !CACHE_DIR!
-)
+## Notes
 
-goto :eof
+- This is a simplified Windows batch version of the PowerShell ci.ps1 script
+- Some advanced features like true concurrent execution support are simplified
+- For more robust execution, consider using the PowerShell version
 
-:DownloadSrcclr
-set SRCCLR_ZIP=%CACHE_DIR%\srcclr-%SRCCLR_VERSION%-windows.zip
+## Related Files
 
-if exist "%SRCCLR_ZIP%" (
-    if %DEBUG_MODE%==1 echo [DEBUG] Lightman zip already exists at %SRCCLR_ZIP%, skipping download...
-    goto :eof
-)
-
-if %DEBUG_MODE%==1 echo [DEBUG] Fetching version %SRCCLR_VERSION% of Lightman and writing to %SRCCLR_ZIP%
-set DOWNLOAD_FILE_URL=%DOWNLOAD_URL%/srcclr-%SRCCLR_VERSION%-windows.zip
-
-REM Try using curl first
-curl -L -o "%SRCCLR_ZIP%" "%DOWNLOAD_FILE_URL%" 2>nul
-if errorlevel 1 (
-    REM Fallback to PowerShell
-    echo Downloading srcclr-%SRCCLR_VERSION%-windows.zip...
-    powershell -Command "$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri '%DOWNLOAD_FILE_URL%' -OutFile '%SRCCLR_ZIP%'"
-    if errorlevel 1 (
-        echo Error: Failed to download %DOWNLOAD_FILE_URL%
-        exit /b 1
-    )
-)
-
-goto :eof
-
-:UnzipSrcclr
-set SRCCLR_INSTALL_PATH=%CACHE_DIR%\srcclr-%SRCCLR_VERSION%
-set SRCCLR_COMPLETED_PATH=%SRCCLR_INSTALL_PATH%\completed
-
-if exist "%SRCCLR_COMPLETED_PATH%" (
-    if %DEBUG_MODE%==1 echo [DEBUG] Lightman is already extracted
-    goto :eof
-)
-
-if %DEBUG_MODE%==1 echo [DEBUG] Unzipping %SRCCLR_ZIP% into %CACHE_DIR%
-
-REM Try using tar (available in Windows 10+)
-tar -xf "%SRCCLR_ZIP%" -C "%CACHE_DIR%" 2>nul
-if not errorlevel 1 (
-    echo. > "%SRCCLR_COMPLETED_PATH%"
-    if %DEBUG_MODE%==1 echo [DEBUG] Successfully extracted using tar
-    goto :eof
-)
-
-REM Try PowerShell Expand-Archive
-powershell -Command "Expand-Archive -Path '%SRCCLR_ZIP%' -DestinationPath '%CACHE_DIR%' -Force" 2>nul
-if not errorlevel 1 (
-    echo. > "%SRCCLR_COMPLETED_PATH%"
-    if %DEBUG_MODE%==1 echo [DEBUG] Successfully extracted using PowerShell Expand-Archive
-    goto :eof
-)
-
-REM Fallback to downloading and using 7zip
-set SEVEN_ZIP_EXE=%CACHE_DIR%\7za.exe
-if not exist "%SEVEN_ZIP_EXE%" (
-    if %DEBUG_MODE%==1 echo [DEBUG] Downloading 7zip
-    curl -L -o "%SEVEN_ZIP_EXE%" "%DOWNLOAD_URL%/7za.exe" 2>nul
-    if errorlevel 1 (
-        powershell -Command "$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri '%DOWNLOAD_URL%/7za.exe' -OutFile '%SEVEN_ZIP_EXE%'"
-    )
-)
-
-if exist "%SEVEN_ZIP_EXE%" (
-    "%SEVEN_ZIP_EXE%" x -o"%CACHE_DIR%" -bd -y "%SRCCLR_ZIP%"
-    if not errorlevel 1 (
-        echo. > "%SRCCLR_COMPLETED_PATH%"
-        if %DEBUG_MODE%==1 echo [DEBUG] Successfully extracted using 7zip
-        goto :eof
-    )
-)
-
-echo Error: Could not extract %SRCCLR_ZIP%
-exit /b 1
-
-:error
-echo An error occurred during execution
-exit /b 1
+- **ci.ps1** - PowerShell version with additional features. Download from [https://docs.veracode.com/r/Manage_agents_and_scans#set-up-an-sca-cli-agent-using-powershell](https://docs.veracode.com/r/Manage_agents_and_scans#set-up-an-sca-cli-agent-using-powershell)
